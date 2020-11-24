@@ -1,0 +1,305 @@
+---
+title: "Environmental predictors of malaria in Ifanadiana"
+author: "Julie Pourtois"
+date: "11/14/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+I make some final modifications to the data, including transforming malaria incidence to be 'number of cases per 1000 people'. 
+
+```{r results = FALSE, message=FALSE, warning=FALSE}
+library('lme4')
+library('plotly')
+library(MASS)
+library(pscl)
+library('lme4')
+library('plotly')
+library('gganimate')
+library('ggplot2')
+library('sf')
+library('tmap')
+library('tmaptools')
+library('leaflet')
+library('dplyr')
+library('transformr')
+library('png')
+library('gifski')
+library('ggsn')
+library('ggpubr')
+library(ape)
+```
+
+
+```{r}
+# Load dataset
+setwd("~/Documents/Stanford/Research /Malaria Project/Data/csv_datasets/")
+predictors <- read.csv("malaria_updated_nov10.csv")
+
+#Load shapefile
+setwd("~/Documents/Stanford/Research /Malaria Project/Data/spatial_datasets/Limite FKT")
+fkt.bound <- st_read('Limite_FKT_Distr_Ifanadiana.shp')
+
+# Join based on ID. 
+joined <- inner_join(predictors, fkt.bound, by = "ID")
+str(joined)
+
+# Add column with month and year combined for visualization
+months <- c("January","February","March","April","May","June","July","August","September","October","November","December")
+
+
+for (i in 1:length(joined$ID)) {
+  
+  m <- months[joined$month[i]]
+  #print(m)
+  year <- toString(joined$year[i])
+  #print(year)
+  joined$date[i] <- paste(m,year)
+  
+}
+
+joined$date <- factor(joined$date, levels = unique(joined$date))
+
+predictors <- joined
+
+# Set month as a factor
+predictors$month <- as.factor(predictors$month)
+
+# Round to 3rd decimal place
+predictors$palu.pc.2nn_0.08 <- round(predictors$palu.pc.2nn_0.08, 3)
+
+# Multiply by 1000
+predictors$palu.pc.2nn_0.08 <- predictors$palu.pc.2nn_0.08*1000
+
+# Remove NA rows
+#predictors <- predictors[!is.na(predictors$palu.pc.2nn_0.08),]
+
+# Create training and test data (2017)
+training_data = predictors[(predictors$year == 2014) | (predictors$year == 2015) | (predictors$year == 2016),]
+test_data = predictors[predictors$year == 2017,]
+
+```
+
+Some initial visualizations...
+
+```{r, echo = FALSE}
+par(mfrow=c(2,4))
+
+p1 <- plot(predictors$palu.pc.2nn_0.08,predictors$malaria.all.lag)
+p2 <- plot(palu.pc.2nn_0.08 ~ forest.cover, predictors)
+p3 <- plot(palu.pc.2nn_0.08 ~ monthly.max.t.lag, predictors)
+p4 <- plot(palu.pc.2nn_0.08 ~ monthly.min.t.lag, predictors)
+p5 <- plot(palu.pc.2nn_0.08 ~ monthly.p.lag, predictors)
+p6 <- plot(palu.pc.2nn_0.08 ~ altitude, predictors)
+p7 <- plot(palu.pc.2nn_0.08 ~ loss.year.of, predictors)
+p8 <- boxplot(predictors$palu.pc.2nn_0.08~predictors$med.veg)
+
+
+par(mfrow=c(2,3))
+
+plot(palu.pc.2nn_0.08 ~ log(lu_rice), predictors)
+plot(palu.pc.2nn_0.08 ~ log(lu_forest), predictors)
+plot(palu.pc.2nn_0.08 ~ log(lu_water), predictors)
+plot(palu.pc.2nn_0.08 ~ log(lu_res), predictors)
+plot(palu.pc.2nn_0.08 ~ lu_savannah, predictors)
+plot(palu.pc.2nn_0.08 ~ nets.high, predictors)
+
+par(mfrow=c(1,1))
+p8 <- boxplot(predictors$palu.pc.2nn_0.08~predictors$med.veg)
+```
+
+First let's assume that we do not have access to malaria incidence from the previous month.
+
+Let's start with a linear regression
+
+```{r}
+linear.corr <- lm(palu.pc.2nn_0.08 ~ month*malaria.all.lag + malaria.all.lag + month + nets.high + nets.low + forest.gain+ monthly.p.lag + monthly.max.t.lag + monthly.min.t.lag + altitude + 
+                 forest.cover + med.veg + I(log(lu_rice + 10^(-6)))+ 
+                 I(log(lu_savannah + 10^(-6)))+ I(log(lu_res+ 10^(-6)))+ 
+                 I(log(lu_water+ 10^(-6))) + loss.3.year.mean + loss.year.of + 
+                 loss.tot.sum, predictors)
+
+summary(linear.corr)
+linear.predictions <- predict(linear.corr)
+
+hist(linear.predictions)
+
+plot(predictors$palu.pc.2nn_0.08, linear.predictions)
+
+```
+
+Note the weird ceiling just above 100. This graph also shows that malaria incidence is not normal. Let's plot it directly.
+
+```{r}
+
+hist(predictors$palu.pc.2nn_0.08, nclass = 50)
+
+```
+
+Definitely not normal. Let's try a Poisson distribution (used for counts and can handle zeros).
+
+```{r}
+
+poisson.corr <- glm(palu.pc.2nn_0.08 ~ month + nets.high + nets.low + forest.gain +  
+                  monthly.p.lag + monthly.max.t.lag + monthly.min.t.lag + altitude + 
+                  forest.cover + med.veg + I(log(lu_rice + 10^(-6)))+ 
+                  I(log(lu_savannah + 10^(-6)))+ I(log(lu_res+ 10^(-6)))+ 
+                  I(log(lu_water+ 10^(-6))) + loss.3.year.mean + loss.year.of + 
+                  loss.tot.sum, family = 'poisson', predictors)
+
+summary(poisson.corr) # Note overdispersion
+poisson.predictions <- predict(poisson.corr)
+plot(predictors$palu.pc.2nn_0.08, poisson.predictions)
+
+```
+
+Not great. Let's try negative binomial, which allows for different variance. 
+
+```{r}
+
+nb.corr <- glm.nb(palu.pc.2nn_0.08 ~ month + nets.high + nets.low + forest.gain +  
+                  monthly.p.lag + monthly.max.t.lag + monthly.min.t.lag + altitude + 
+                  forest.cover + med.veg + I(log(lu_rice + 10^(-6)))+ 
+                  I(log(lu_savannah + 10^(-6)))+ I(log(lu_res+ 10^(-6)))+ 
+                  I(log(lu_water+ 10^(-6))) + loss.3.year.mean + loss.year.of + 
+                  loss.tot.sum,predictors)
+
+summary(nb.corr)
+nb.predictions <- predict(nb.corr)
+plot(predictors$palu.pc.2nn_0.08, nb.predictions)
+
+
+```
+
+
+Still too many zeros. Try zero-inflated. 
+
+```{r}
+
+zinb.corr <- zeroinfl(palu.pc.2nn_0.08 ~ Population + month + nets.high + nets.low + forest.gain +  
+                       p.lag.2 + max.t.lag.2 + min.t.lag.2 + altitude + 
+                       forest.cover + med.veg + I(log(lu_rice + 10^(-6)))+ 
+                       I(log(lu_savannah + 10^(-6)))+ I(log(lu_res+ 10^(-6)))+ 
+                       I(log(lu_water+ 10^(-6))) + loss.3.year.mean + loss.year.of + 
+                       loss.tot.sum, data = predictors, dist = "negbin")
+
+summary(zinb.corr)
+zinb.predictions <- predict(zinb.corr, na.action =NULL)
+plot(predictors$palu.pc.2nn_0.08, zinb.predictions)
+#hist(zinb.predictions)
+
+```
+
+Wooohoo... much better
+
+What about including previous malaria?
+
+```{r}
+
+#predictors.noNa <- predictors[!is.na(predictors$malaria.all.lag),]
+
+zinb.corr <- zeroinfl(palu.pc.2nn_0.08 ~ month*malaria.all.lag + Population + month + nets.high + nets.low + forest.gain + monthly.p.lag + monthly.max.t.lag + monthly.min.t.lag + altitude + forest.cover + med.veg + I(log(lu_rice + 10^(-6)))+ I(log(lu_savannah + 10^(-6)))+ I(log(lu_res+ 10^(-6)))+ I(log(lu_water+ 10^(-6))) + loss.3.year.mean + loss.year.of + loss.tot.sum, data = predictors, dist = "negbin")
+
+summary(zinb.corr)
+zinb.predictions <- predict(zinb.corr, predictors, na.action =NULL)
+zinb.predictions[zinb.predictions > 1000] <- 1000
+plot(predictors.noNa$palu.pc.2nn_0.08, zinb.predictions)
+
+rmse.zinb <- (sum((predictors$palu.pc.2nn_0.08 - zinb.predictions)^2, na.rm = TRUE)/length(linear.predictions[!is.na(linear.predictions)]))^(0.5)
+
+plot(residuals(zinb.corr))
+
+
+
+```
+
+Just checking with linear regression again
+
+```{r}
+linear.corr <- lm(palu.pc.2nn_0.08 ~ month*malaria.all.lag + Population + month + nets.high + nets.low + forest.gain+ monthly.p.lag + monthly.max.t.lag + monthly.min.t.lag + altitude + 
+                 forest.cover + med.veg + I(log(lu_rice + 10^(-6)))+ 
+                 I(log(lu_savannah + 10^(-6)))+ I(log(lu_res+ 10^(-6)))+ 
+                 I(log(lu_water+ 10^(-6))) + loss.3.year.mean + loss.year.of + 
+                 loss.tot.sum, predictors)
+
+summary(linear.corr)
+linear.predictions <- predict(linear.corr, predictors, na.action =NULL)
+linear.predictions[linear.predictions < 0] <- 0
+hist(linear.predictions)
+
+predictors$linear.pred = linear.predictions
+
+plot(predictors.noNa$palu.pc.2nn_0.08, linear.predictions)
+
+rmse.linear <- (sum((predictors$palu.pc.2nn_0.08-linear.predictions)^2, na.rm = TRUE)/length(linear.predictions[!is.na(linear.predictions)]))^(0.5)
+```
+
+
+```{r}
+# Moran I analysis
+# https://stats.idre.ucla.edu/r/faq/how-can-i-calculate-morans-i-in-r/
+
+test.df <- predictors.noNa[predictors.noNa$year == 2014 & predictors.noNa$month == 6,]
+
+fok.dists <- as.matrix(dist(cbind(test.df$long, test.df$lat)))
+
+fok.dists.inv <- 1/fok.dists
+diag(fok.dists.inv) <- 0
+ 
+fok.dists.inv[1:5, 1:5]
+
+Moran.I(residuals(linear.corr)[predictors.noNa$year == 2014 & predictors.noNa$month == 7], fok.dists.inv)
+
+range(fok.dists.inv)
+range(fok.dists)
+
+```
+```{r}
+# Plot predicted malaria incidence and difference
+
+malaria.predicted <- ggplot(predictors) + geom_sf(aes(fill = linear.pred, geometry = geometry)) +
+  labs(title = "{closest_state}", fill = "Predicted malaria incidence \n (per 1000 inhabitants)") +
+  transition_states(date,
+                    transition_length = 2,
+                    state_length = 2) +
+  scale_fill_distiller(palette = "Spectral")
+
+animate(malaria.predicted, duration = 40)
+
+anim_save('malaria_predicted.gif', last_animation())
+
+malaria.res <- ggplot(predictors) + geom_sf(aes(fill = (linear.pred - palu.pc.2nn_0.08), geometry = geometry)) +
+  labs(title = "{closest_state}", fill = "Residuals (Predicted - Observed) \n (per 1000 inhabitants)") +
+  transition_states(date,
+                    transition_length = 2,
+                    state_length = 2) +
+  scale_fill_distiller(palette = "Spectral")
+
+animate(malaria.res, duration = 40)
+
+anim_save('malaria_res.gif', last_animation())
+
+```
+
+
+Now, let's see which lags and functions work best
+
+```{r}
+
+```
+
+
+IDEAS:
+
+- Low season versus high season (two models)
+- XGBoost --> Machine learning
+- ARIMA --> fable package, sweep package
+
+
+seasonal
+
+
+
