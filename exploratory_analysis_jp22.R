@@ -28,7 +28,7 @@ library('ggsn')
 library('ggpubr')
 library(ape)
 
-setwd("~/Documents/Stanford/Research /Malaria Project/Data/csv_datasets")
+setwd("/Users/Krti/Desktop/ifanadiana-malaria/csv_datasets")
 predictors <- read.csv('malaria_updated_nov10.csv')
 
 # Set month as a factor
