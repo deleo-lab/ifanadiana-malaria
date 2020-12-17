@@ -40,7 +40,7 @@ setwd("~/Documents/Stanford/Research /Malaria Project/Data/csv_datasets/")
 predictors <- read.csv("malaria_updated_nov10.csv")
 
 #Load shapefile
-setwd("~/Documents/Stanford/Research /Malaria Project/Data/spatial_datasets/Limite FKT")
+setwd("/Users/Krti/Desktop/ifanadiana-malaria/spatial_datasets/Limite FKT")
 fkt.bound <- st_read('Limite_FKT_Distr_Ifanadiana.shp')
 
 # Join based on ID. 
